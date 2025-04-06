@@ -1,0 +1,9 @@
+[package]
+name = "cacia"
+version = "0.1.0"
+edition = "2021"
+description = "Cacia (CC) cryptocurrency node"
+license = "MIT"
+repository = "https://github.com/Zone-crypto-ZNE/CaciaCC"
+
+[dependencies]
