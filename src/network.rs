@@ -4,6 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json;
 use crate::{Blockchain, Block, Transaction};
 
+#[derive(Clone)]
 pub struct Network {
     bc: Arc<Mutex<Blockchain>>,
     addr: String,
@@ -19,12 +20,10 @@ impl Network {
         let listener = TcpListener::bind(&self.addr).await?;
         println!("P2P server listening on {}", self.addr);
 
-        // Connect to peers
         for peer in &self.peers {
             self.connect_to_peer(peer).await;
         }
 
-        // Handle incoming connections
         while let Ok((stream, addr)) = listener.accept().await {
             let bc = Arc::clone(&self.bc);
             tokio::spawn(async move {
@@ -53,7 +52,6 @@ impl Network {
                 let msg = String::from_utf8_lossy(&buffer[..n]);
                 println!("Received from {}: {}", addr, msg.len());
 
-                // Try parsing as a chain (sync) or single block/tx
                 if let Ok(chain) = serde_json::from_str::<Vec<Block>>(&msg) {
                     let mut bc = bc.lock().unwrap();
                     if chain.len() > bc.chain.len() {
@@ -69,8 +67,9 @@ impl Network {
                     }
                 } else if let Ok(tx) = serde_json::from_str::<Transaction>(&msg) {
                     let mut bc = bc.lock().unwrap();
-                    bc.add_transaction(tx);
-                    println!("Added tx from peer {}", addr);
+                    if bc.add_transaction(tx) {
+                        println!("Added tx from peer {}", addr);
+                    }
                 }
 
                 stream.write_all(b"ACK").await.unwrap();
