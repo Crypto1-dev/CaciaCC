@@ -2,16 +2,15 @@
 name = "cacia"
 version = "0.1.0"
 edition = "2021"
-description = "Cacia (CC) cryptocurrency node - a fast, efficient blockchain"
+description = "Cacia (CC) cryptocurrency node"
 license = "MIT"
 repository = "https://github.com/Zone-crypto-ZNE/CaciaCC"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }  # Async P2P networking
-secp256k1 = "0.24"                              # ECDSA cryptography
-serde = { version = "1", features = ["derive"] } # Serialization
-serde_json = "1"                                # JSON handling
-sha2 = "0.10"                                   # Hashing for blocks
-rand = "0.8"                                    # Randomness for PoS
-chrono = "0.4"                                  # Timestamps
-hex = "0.4"                                     # Hex encoding
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+rand = "0.8"
+chrono = "0.4"
+hex = "0.4"
