@@ -1,25 +1,25 @@
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use secp256k1::{SecretKey, PublicKey, Secp256k1, Message};
+use tokio::time::{sleep, Duration};
 use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
 use chrono::Utc;
 use rand::Rng;
+mod network; // Include the new network module
+use network::Network;
 
 const TOTAL_SUPPLY: u64 = 1_000_000_000 * 10_u64.pow(8); // 1B CC (8 decimals)
 const FEE: u64 = 5_000; // 0.005 CC (8 decimals)
 const BLOCK_TIME: u64 = 5; // 5 seconds
+const NODE_ADDR: &str = "127.0.0.1:7878"; // Default node address
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
-    sender: String, // Public key (hex)
-    receiver: String, // Public key (hex)
+    sender: String, // Public key (hex, placeholder until ECDSA)
+    receiver: String,
     amount: u64, // In smallest unit (10^8 CC)
     fee: u64,
-    signature: String, // Hex-encoded
+    signature: String, // Placeholder for now
     timestamp: i64,
 }
 
@@ -30,7 +30,7 @@ struct Block {
     transactions: Vec<Transaction>,
     previous_hash: String,
     hash: String,
-    validator: String, // Public key of staker
+    validator: String,
 }
 
 #[derive(Clone)]
@@ -38,7 +38,7 @@ struct Blockchain {
     chain: VecDeque<Block>,
     balances: HashMap<String, u64>,
     pending_txs: Vec<Transaction>,
-    stakes: HashMap<String, u64>, // Address -> staked amount
+    stakes: HashMap<String, u64>,
 }
 
 impl Blockchain {
@@ -65,7 +65,6 @@ impl Blockchain {
         let hash = Self::hash_block(&genesis);
         let genesis = Block { hash, ..genesis };
         self.chain.push_back(genesis);
-        // Distribute initial supply to a "treasury" address (simplified)
         self.balances.insert("treasury".to_string(), TOTAL_SUPPLY);
     }
 
@@ -83,15 +82,28 @@ impl Blockchain {
     }
 
     fn add_transaction(&mut self, tx: Transaction) {
-        self.pending_txs.push(tx);
+        // Basic validation (no signature check yet)
+        let sender_bal = self.balances.get(&tx.sender).unwrap_or(&0);
+        if *sender_bal >= tx.amount + tx.fee {
+            self.pending_txs.push(tx);
+        }
     }
 
     fn select_validator(&self) -> String {
-        // Simple PoS: pick validator with highest stake (weighted random in real impl)
-        self.stakes.iter()
-            .max_by_key(|&(_, &stake)| stake)
-            .map(|(addr, _)| addr.clone())
-            .unwrap_or("default_validator".to_string())
+        let total_stake: u64 = self.stakes.values().sum();
+        if total_stake == 0 {
+            return "default_validator".to_string();
+        }
+        let mut rng = rand::thread_rng();
+        let pick = rng.gen_range(0..total_stake);
+        let mut cumulative = 0;
+        for (addr, stake) in &self.stakes {
+            cumulative += stake;
+            if pick < cumulative {
+                return addr.clone();
+            }
+        }
+        "default_validator".to_string()
     }
 
     fn create_block(&mut self) -> Block {
@@ -125,50 +137,47 @@ impl Blockchain {
         }
         self.chain.push_back(block);
     }
+
+    fn get_chain(&self) -> Vec<Block> {
+        self.chain.iter().cloned().collect()
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bc = Arc::new(Mutex::new(Blockchain::new()));
-    let listener = TcpListener::bind("127.0.0.1:7878").await?;
-    println!("Cacia (CC) node running on 127.0.0.1:7878");
+    println!("Cacia (CC) node starting on {}", NODE_ADDR);
 
-    // Simulate staking for testing
+    // Initial stakes for testing
     {
         let mut bc = bc.lock().unwrap();
         bc.stakes.insert("validator1".to_string(), 1000 * 10_u64.pow(8));
+        bc.stakes.insert("validator2".to_string(), 500 * 10_u64.pow(8));
+        bc.balances.insert("user1".to_string(), 100 * 10_u64.pow(8));
     }
 
-    // Spawn block creation task
+    // Network setup
+    let network = Network::new(Arc::clone(&bc), NODE_ADDR.to_string(), vec![
+        "127.0.0.1:7879".to_string(), // Example peers
+        "127.0.0.1:7880".to_string(),
+    ]);
+
+    // Block creation task
     let bc_clone = Arc::clone(&bc);
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(BLOCK_TIME)).await;
+            sleep(Duration::from_secs(BLOCK_TIME)).await;
             let mut bc = bc_clone.lock().unwrap();
-            let block = bc.create_block();
-            bc.apply_block(block.clone());
-            println!("New block: {}", block.hash);
+            if !bc.pending_txs.is_empty() {
+                let block = bc.create_block();
+                bc.apply_block(block.clone());
+                println!("New block: {}", block.hash);
+            }
         }
     });
 
-    // P2P server
-    while let Ok((stream, addr)) = listener.accept().await {
-        let bc = Arc::clone(&bc);
-        tokio::spawn(handle_connection(stream, addr, bc));
-    }
+    // Start P2P network
+    network.run().await?;
 
     Ok(())
-}
-
-async fn handle_connection(mut stream: TcpStream, addr: SocketAddr, bc: Arc<Mutex<Blockchain>>) {
-    let mut buffer = [0; 1024];
-    match stream.read(&mut buffer).await {
-        Ok(n) if n > 0 => {
-            let msg = String::from_utf8_lossy(&buffer[..n]);
-            println!("Received from {}: {}", addr, msg);
-            // Handle incoming txs or blocks (simplified)
-            stream.write_all(b"ACK").await.unwrap();
-        }
-        _ => println!("Connection closed by {}", addr),
-    }
 }
