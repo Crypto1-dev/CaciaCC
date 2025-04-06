@@ -5,21 +5,21 @@ use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
 use chrono::Utc;
 use rand::Rng;
-mod network; // Include the new network module
+mod network;
 use network::Network;
 
 const TOTAL_SUPPLY: u64 = 1_000_000_000 * 10_u64.pow(8); // 1B CC (8 decimals)
 const FEE: u64 = 5_000; // 0.005 CC (8 decimals)
 const BLOCK_TIME: u64 = 5; // 5 seconds
-const NODE_ADDR: &str = "127.0.0.1:7878"; // Default node address
+const NODE_ADDR: &str = "127.0.0.1:7878";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Transaction {
-    sender: String, // Public key (hex, placeholder until ECDSA)
+    sender: String,
     receiver: String,
-    amount: u64, // In smallest unit (10^8 CC)
+    amount: u64,
     fee: u64,
-    signature: String, // Placeholder for now
+    signature: String, // Placeholder until ECDSA
     timestamp: i64,
 }
 
@@ -81,11 +81,14 @@ impl Blockchain {
         hex::encode(hasher.finalize())
     }
 
-    fn add_transaction(&mut self, tx: Transaction) {
-        // Basic validation (no signature check yet)
+    fn add_transaction(&mut self, tx: Transaction) -> bool {
         let sender_bal = self.balances.get(&tx.sender).unwrap_or(&0);
         if *sender_bal >= tx.amount + tx.fee {
-            self.pending_txs.push(tx);
+            self.pending_txs.push(tx.clone());
+            true
+        } else {
+            println!("Transaction failed: insufficient balance for {}", tx.sender);
+            false
         }
     }
 
@@ -106,7 +109,10 @@ impl Blockchain {
         "default_validator".to_string()
     }
 
-    fn create_block(&mut self) -> Block {
+    fn create_block(&mut self) -> Option<Block> {
+        if self.pending_txs.is_empty() {
+            return None;
+        }
         let previous_block = self.chain.back().unwrap();
         let validator = self.select_validator();
         let block = Block {
@@ -118,7 +124,7 @@ impl Blockchain {
             validator,
         };
         let hash = Self::hash_block(&block);
-        Block { hash, ..block }
+        Some(Block { hash, ..block })
     }
 
     fn apply_block(&mut self, block: Block) {
@@ -148,36 +154,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bc = Arc::new(Mutex::new(Blockchain::new()));
     println!("Cacia (CC) node starting on {}", NODE_ADDR);
 
-    // Initial stakes for testing
+    // Initial setup
     {
         let mut bc = bc.lock().unwrap();
         bc.stakes.insert("validator1".to_string(), 1000 * 10_u64.pow(8));
         bc.stakes.insert("validator2".to_string(), 500 * 10_u64.pow(8));
         bc.balances.insert("user1".to_string(), 100 * 10_u64.pow(8));
+        bc.balances.insert("user2".to_string(), 50 * 10_u64.pow(8));
     }
 
-    // Network setup
     let network = Network::new(Arc::clone(&bc), NODE_ADDR.to_string(), vec![
-        "127.0.0.1:7879".to_string(), // Example peers
+        "127.0.0.1:7879".to_string(),
         "127.0.0.1:7880".to_string(),
     ]);
 
+    // Test transaction
+    {
+        let mut bc = bc.lock().unwrap();
+        let tx = Transaction {
+            sender: "user1".to_string(),
+            receiver: "user2".to_string(),
+            amount: 10 * 10_u64.pow(8), // 10 CC
+            fee: FEE,
+            signature: "placeholder_sig".to_string(),
+            timestamp: Utc::now().timestamp(),
+        };
+        if bc.add_transaction(tx) {
+            network.broadcast_tx(tx).await;
+        }
+    }
+
     // Block creation task
     let bc_clone = Arc::clone(&bc);
+    let network_clone = network.clone();
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(BLOCK_TIME)).await;
             let mut bc = bc_clone.lock().unwrap();
-            if !bc.pending_txs.is_empty() {
-                let block = bc.create_block();
+            if let Some(block) = bc.create_block() {
                 bc.apply_block(block.clone());
-                println!("New block: {}", block.hash);
+                println!("New block: {} (txs: {})", block.hash, block.transactions.len());
+                network_clone.broadcast_block(block).await;
             }
         }
     });
 
-    // Start P2P network
     network.run().await?;
-
     Ok(())
 }
