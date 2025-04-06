@@ -5,12 +5,16 @@ use sha2::{Sha256, Digest};
 use serde::{Serialize, Deserialize};
 use chrono::Utc;
 use rand::Rng;
+use ed25519_dalek::{PublicKey, Signature, Signer, Verifier, Keypair};
+use rand::rngs::OsRng;
+use hex;
+
 mod network;
 use network::Network;
 
-const TOTAL_SUPPLY: u64 = 1_000_000_000 * 10_u64.pow(8); // 1B CC (8 decimals)
-const FEE: u64 = 5_000; // 0.005 CC (8 decimals)
-const BLOCK_TIME: u64 = 5; // 5 seconds
+const TOTAL_SUPPLY: u64 = 1_000_000_000 * 10_u64.pow(8);
+const FEE: u64 = 5_000;
+const BLOCK_TIME: u64 = 5;
 const NODE_ADDR: &str = "127.0.0.1:7878";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,8 +23,38 @@ struct Transaction {
     receiver: String,
     amount: u64,
     fee: u64,
-    signature: String, // Placeholder until ECDSA
+    signature: String,
     timestamp: i64,
+    public_key: String,
+}
+
+impl Transaction {
+    fn hash(&self) -> Vec<u8> {
+        let tx_data = format!("{}{}{}{}{}", self.sender, self.receiver, self.amount, self.fee, self.timestamp);
+        let mut hasher = Sha256::new();
+        hasher.update(tx_data);
+        hasher.finalize().to_vec()
+    }
+
+    fn verify_signature(&self) -> bool {
+        let pub_bytes = match hex::decode(&self.public_key) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let public_key = match PublicKey::from_bytes(&pub_bytes) {
+            Ok(pk) => pk,
+            Err(_) => return false,
+        };
+        let sig_bytes = match hex::decode(&self.signature) {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let signature = match Signature::from_bytes(&sig_bytes) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        public_key.verify(&self.hash(), &signature).is_ok()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -82,6 +116,11 @@ impl Blockchain {
     }
 
     fn add_transaction(&mut self, tx: Transaction) -> bool {
+        if !tx.verify_signature() {
+            println!("Rejected tx: invalid signature from {}", tx.sender);
+            return false;
+        }
+
         let sender_bal = self.balances.get(&tx.sender).unwrap_or(&0);
         if *sender_bal >= tx.amount + tx.fee {
             self.pending_txs.push(tx.clone());
@@ -115,10 +154,12 @@ impl Blockchain {
         }
         let previous_block = self.chain.back().unwrap();
         let validator = self.select_validator();
+        let txs: Vec<Transaction> = self.pending_txs.drain(..).collect();
+
         let block = Block {
             index: previous_block.index + 1,
             timestamp: Utc::now().timestamp(),
-            transactions: self.pending_txs.drain(..).collect(),
+            transactions: txs,
             previous_hash: previous_block.hash.clone(),
             hash: String::new(),
             validator,
@@ -129,6 +170,11 @@ impl Blockchain {
 
     fn apply_block(&mut self, block: Block) {
         for tx in &block.transactions {
+            if !tx.verify_signature() {
+                println!("Invalid tx in block {}: signature fail", block.index);
+                continue;
+            }
+
             let sender = tx.sender.clone();
             let receiver = tx.receiver.clone();
             let amount = tx.amount;
@@ -139,6 +185,8 @@ impl Blockchain {
                 *sender_bal -= amount + fee;
                 *self.balances.entry(receiver).or_insert(0) += amount;
                 *self.balances.entry(block.validator.clone()).or_insert(0) += fee;
+            } else {
+                println!("Skipped tx from {} due to low balance", sender);
             }
         }
         self.chain.push_back(block);
@@ -152,15 +200,13 @@ impl Blockchain {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bc = Arc::new(Mutex::new(Blockchain::new()));
-    println!("Cacia (CC) node starting on {}", NODE_ADDR);
+    println!("Cacia (CC) node running at {}", NODE_ADDR);
 
-    // Initial setup
     {
         let mut bc = bc.lock().unwrap();
-        bc.stakes.insert("validator1".to_string(), 1000 * 10_u64.pow(8));
-        bc.stakes.insert("validator2".to_string(), 500 * 10_u64.pow(8));
-        bc.balances.insert("user1".to_string(), 100 * 10_u64.pow(8));
-        bc.balances.insert("user2".to_string(), 50 * 10_u64.pow(8));
+        bc.stakes.insert("validator1".to_string(), 1_000 * 10_u64.pow(8));
+        bc.balances.insert("user1".to_string(), 1_000 * 10_u64.pow(8));
+        bc.balances.insert("user2".to_string(), 100 * 10_u64.pow(8));
     }
 
     let network = Network::new(Arc::clone(&bc), NODE_ADDR.to_string(), vec![
@@ -168,23 +214,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "127.0.0.1:7880".to_string(),
     ]);
 
-    // Test transaction
+    // Simulated transaction with keypair
     {
-        let mut bc = bc.lock().unwrap();
-        let tx = Transaction {
+        let mut csprng = OsRng {};
+        let keypair = Keypair::generate(&mut csprng);
+        let pubkey_hex = hex::encode(keypair.public.to_bytes());
+
+        let mut tx = Transaction {
             sender: "user1".to_string(),
             receiver: "user2".to_string(),
-            amount: 10 * 10_u64.pow(8), // 10 CC
+            amount: 10 * 10_u64.pow(8),
             fee: FEE,
-            signature: "placeholder_sig".to_string(),
+            signature: "".to_string(),
             timestamp: Utc::now().timestamp(),
+            public_key: pubkey_hex.clone(),
         };
-        if bc.add_transaction(tx) {
+
+        let sig = keypair.sign(&tx.hash());
+        tx.signature = hex::encode(sig.to_bytes());
+
+        let mut bc = bc.lock().unwrap();
+        if bc.add_transaction(tx.clone()) {
             network.broadcast_tx(tx).await;
         }
     }
 
-    // Block creation task
+    // Auto block creation
     let bc_clone = Arc::clone(&bc);
     let network_clone = network.clone();
     tokio::spawn(async move {
@@ -193,7 +248,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut bc = bc_clone.lock().unwrap();
             if let Some(block) = bc.create_block() {
                 bc.apply_block(block.clone());
-                println!("New block: {} (txs: {})", block.hash, block.transactions.len());
+                println!("New block [{}] by {} | txs: {}", block.index, block.validator, block.transactions.len());
                 network_clone.broadcast_block(block).await;
             }
         }
