@@ -36,8 +36,8 @@ Cacia is focused on delivering:
 | ✅ | Design basic blockchain protocol |
 | ✅ | Implement node and REST API |
 | 🔄 | Add staking and replay protection |
-| 🔜 | Launch testnet |
-| 🔜 | Create wallet CLI + GUI |
+| ✅ | Launch testnet |
+| 🔄 | Create wallet CLI + GUI |
 | 🔜 | Launch mainnet |
 
 ---
