@@ -1,10 +1,10 @@
-\# Rust-specific
+# Rust-specific
 /target/
 *.rlib
 *.rustc
 Cargo.lock
 
-# General development
+# General development files
 *.log
 *.pid
 *.seed
@@ -18,16 +18,18 @@ Cargo.lock
 wallet_*
 ledger_*
 
-# OS and editor files
+# OS and editor-specific files
 .DS_Store
 *.swp
 *.swo
 .vscode/
 .idea/
 
-# Testing and misc
+# Compiled binaries and executable files
 *.out
 *.exe
 *.dll
 *.so
+
+# Coverage files (for testing)
 coverage/
