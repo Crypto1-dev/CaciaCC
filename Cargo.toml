@@ -40,3 +40,7 @@ thiserror = "1.0"
 # Unit Testing
 mockito = "0.31"
 tokio-test = "1.0"
+
+[[bin]]
+name = "lat"
+path = "src/lat.rs"
