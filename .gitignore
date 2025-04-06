@@ -33,3 +33,8 @@ ledger_*
 
 # Coverage files (for testing)
 coverage/
+
+# Optional: Docker files (if using Docker)
+*.env
+*.dockerfile
+docker-compose.yml
