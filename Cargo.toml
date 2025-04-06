@@ -14,4 +14,5 @@ sha2 = "0.10"
 rand = "0.8"
 chrono = "0.4"
 hex = "0.4"
-clap = "3" 
+clap = "3"  # For command-line argument parsing
+ed25519-dalek = "1.0"  # For keypair generation
