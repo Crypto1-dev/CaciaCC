@@ -252,135 +252,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let network = Network::new(
-        Arc::clone(&bc),
         NODE_ADDR.to_string(),
-        vec![
-            "127.0.0.1:7879".to_string(),
-            "127.0.0.1:7880".to_string(),
-        ],
+        API_ADDR.to_string(),
+        bc.clone(),
     );
 
-    // Spawn network task for broadcasting blocks and transactions
-    let network_clone = network.clone();
-    tokio::spawn(async move {
-        network_clone.run().await.unwrap();
-    });
-
-    // Simulated transaction creation with keypair (example)
-    {
-        let mut csprng = OsRng {};
-        let keypair = Keypair::generate(&mut csprng);
-        let pubkey_hex = hex::encode(keypair.public.to_bytes());
-
-        let mut tx = Transaction {
-            sender: "user1".to_string(),
-            receiver: "user2".to_string(),
-            amount: 10 * 10_u64.pow(8),
-            fee: FEE,
-            nonce: 0, // first transaction nonce
-            signature: "".to_string(),
-            timestamp: Utc::now().timestamp(),
-            public_key: pubkey_hex.clone(),
-        };
-
-        let sig = keypair.sign(&tx.hash());
-        tx.signature = hex::encode(sig.to_bytes());
-
-        let mut bc_locked = bc.lock().unwrap();
-        if bc_locked.add_transaction(tx.clone()) {
-            network.broadcast_tx(tx).await;
-        }
-    }
-
-    // Auto block creation task
-    let bc_clone = Arc::clone(&bc);
-    let network_clone = network.clone();
-    tokio::spawn(async move {
-        loop {
-            sleep(Duration::from_secs(BLOCK_TIME)).await;
-            let mut bc_locked = bc_clone.lock().unwrap();
-            if let Some(block) = bc_locked.create_block() {
-                bc_locked.apply_block(block.clone());
-                println!(
-                    "New block [{}] by {} | txs: {}",
-                    block.index,
-                    block.validator,
-                    block.transactions.len()
-                );
-                network_clone.broadcast_block(block).await;
-            }
-        }
-    });
-
-    // Run REST API server concurrently (provides endpoints for chain queries, balance, and transaction submission)
-    let bc_for_api = Arc::clone(&bc);
-    tokio::spawn(async move {
-        run_api(bc_for_api).await;
-    });
-
-    // Keep main thread alive indefinitely
-    loop {
-        sleep(Duration::from_secs(60)).await;
-    }
-}
-
-// REST API using warp
-async fn run_api(bc: Arc<Mutex<Blockchain>>) {
-    // GET /chain - returns blockchain
-    let chain_route = warp::path("chain")
-        .and(warp::get())
-        .and(with_blockchain(bc.clone()))
-        .and_then(handle_get_chain);
-
-    // GET /balance/{address} - returns balance for an address
-    let balance_route = warp::path!("balance" / String)
-        .and(warp::get())
-        .and(with_blockchain(bc.clone()))
-        .and_then(handle_get_balance);
-
-    // POST /tx - accepts a transaction in JSON format
-    let tx_route = warp::path("tx")
+    let tx_api = warp::path("send")
         .and(warp::post())
         .and(warp::body::json())
-        .and(with_blockchain(bc.clone()))
-        .and_then(handle_post_tx);
+        .map(move |tx: Transaction| {
+            let mut bc_locked = bc.lock().unwrap();
+            if bc_locked.add_transaction(tx) {
+                warp::reply::json(&"Transaction added")
+            } else {
+                warp::reply::json(&"Transaction failed")
+            }
+        });
 
-    let routes = chain_route.or(balance_route).or(tx_route);
-    println!("API running on {}", API_ADDR);
-    warp::serve(routes).run(([127, 0, 0, 1], 8000)).await;
-}
+    let status_api = warp::path("status")
+        .map(move || {
+            let bc_locked = bc.lock().unwrap();
+            warp::reply::json(&bc_locked.get_chain())
+        });
 
-fn with_blockchain(
-    bc: Arc<Mutex<Blockchain>>,
-) -> impl Filter<Extract = (Arc<Mutex<Blockchain>>,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || bc.clone())
-}
-
-async fn handle_get_chain(
-    bc: Arc<Mutex<Blockchain>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    let bc_locked = bc.lock().unwrap();
-    let chain = bc_locked.get_chain();
-    Ok(warp::reply::json(&chain))
-}
-
-async fn handle_get_balance(
-    address: String,
-    bc: Arc<Mutex<Blockchain>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    let bc_locked = bc.lock().unwrap();
-    let balance = bc_locked.get_balance(&address);
-    Ok(warp::reply::json(&balance))
-}
-
-async fn handle_post_tx(
-    tx: Transaction,
-    bc: Arc<Mutex<Blockchain>>,
-) -> Result<impl warp::Reply, warp::Rejection> {
-    let mut bc_locked = bc.lock().unwrap();
-    if bc_locked.add_transaction(tx.clone()) {
-        Ok(warp::reply::json(&"Transaction accepted"))
-    } else {
-        Ok(warp::reply::json(&"Transaction rejected"))
-    }
+    let api = tx_api.or(status_api);
+    tokio::spawn(network.run());
+    warp::serve(api).run(([127, 0, 0, 1], 8000)).await;
+    Ok(())
 }
