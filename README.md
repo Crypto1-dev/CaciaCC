@@ -38,7 +38,7 @@ Cacia is focused on delivering:
 | 🔄 | Add staking and replay protection |
 | 🔜 | Launch testnet |
 | 🔄 | Create wallet CLI + GUI |
-| ✅ | Launch mainnet |
+| 🔄 | Launch mainnet |
 
 ---
 
